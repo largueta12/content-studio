@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { supabase } from './supabase'
 
 const STATUS_COLORS = { pendiente:'#f59e0b', 'en-proceso':'#7c6deb', completado:'#22c55e' }
@@ -27,11 +27,61 @@ export default function Dashboard({ user, onLogout }) {
   const [showProfile, setShowProfile] = useState(false)
   const [dragTaskId, setDragTaskId] = useState(null)
   const [dragEpId, setDragEpId] = useState(null)
-  const [dragEpFrom, setDragEpFrom] = useState(null)
+  const [fontSize, setFontSize] = useState(() => parseFloat(localStorage.getItem('fontSize') || '13'))
+  const [showFontSlider, setShowFontSlider] = useState(false)
+
+  // Focus mode
+  const [focusActive, setFocusActive] = useState(false)
+  const [focusSeconds, setFocusSeconds] = useState(25 * 60)
+  const [focusRunning, setFocusRunning] = useState(false)
+  const [focusLabel, setFocusLabel] = useState('Sesión de trabajo')
+  const timerRef = useRef(null)
+
+  useEffect(() => { loadData() }, [])
 
   useEffect(() => {
-    loadData()
-  }, [])
+    document.documentElement.style.fontSize = fontSize + 'px'
+    localStorage.setItem('fontSize', fontSize)
+  }, [fontSize])
+
+  useEffect(() => {
+    if (focusRunning) {
+      timerRef.current = setInterval(() => {
+        setFocusSeconds(s => {
+          if (s <= 1) {
+            clearInterval(timerRef.current)
+            setFocusRunning(false)
+            if ('Notification' in window) new Notification('¡Tiempo! ✓', { body: 'Sesión completada.' })
+            return 0
+          }
+          return s - 1
+        })
+      }, 1000)
+    } else {
+      clearInterval(timerRef.current)
+    }
+    return () => clearInterval(timerRef.current)
+  }, [focusRunning])
+
+  const startFocus = async () => {
+    setFocusActive(true)
+    setFocusRunning(true)
+    // Request notification permission
+    if ('Notification' in window) await Notification.requestPermission()
+    // Try to suppress notifications via Screen Wake Lock (keeps screen on)
+    if ('wakeLock' in navigator) {
+      try { await navigator.wakeLock.request('screen') } catch(e) {}
+    }
+  }
+
+  const stopFocus = () => {
+    setFocusActive(false)
+    setFocusRunning(false)
+    setFocusSeconds(25 * 60)
+    clearInterval(timerRef.current)
+  }
+
+  const formatTime = (s) => `${String(Math.floor(s/60)).padStart(2,'0')}:${String(s%60).padStart(2,'0')}`
 
   const loadData = async () => {
     const [t, s, ep, ct] = await Promise.all([
@@ -139,7 +189,7 @@ export default function Dashboard({ user, onLogout }) {
     if (!dragEpId) return
     setEditProjects(p => p.map(ep => ep.id === dragEpId ? {...ep, column_name: toCol} : ep))
     await supabase.from('edit_projects').update({ column_name: toCol }).eq('id', dragEpId)
-    setDragEpId(null); setDragEpFrom(null)
+    setDragEpId(null)
   }
 
   const addEditProject = async () => {
@@ -160,14 +210,6 @@ export default function Dashboard({ user, onLogout }) {
     return pOk && sOk
   })
 
-  const allTabs = [
-    { id: 'pendientes', label: 'Pendientes', removable: false },
-    { id: 'calendario', label: 'Calendario', removable: false },
-    { id: 'guiones', label: 'Guiones', removable: false },
-    { id: 'edicion', label: 'Edición', removable: false },
-    ...customTabs.map(ct => ({ id: 'ct-' + ct.id, label: ct.label, removable: true, dbId: ct.id }))
-  ]
-
   const renderCalendar = () => {
     const first = new Date(calYear, calMonth, 1).getDay()
     const days = new Date(calYear, calMonth + 1, 0).getDate()
@@ -180,10 +222,10 @@ export default function Dashboard({ user, onLogout }) {
       const dayScripts = scripts.filter(s => s.sched_date === key)
       cells.push(
         <div key={d} onClick={() => selectedScript && updateScript('sched_date', key)}
-          style={{ minHeight:54, border:`0.5px solid ${isToday ? 'var(--text)' : 'var(--border)'}`, borderRadius:6, padding:5, cursor:'pointer' }}>
-          <div style={{ fontSize:10, color: isToday ? 'var(--text)' : 'var(--text3)', fontWeight: isToday ? 500 : 400 }}>{d}</div>
-          <div style={{ display:'flex', flexWrap:'wrap', gap:2, marginTop:3 }}>
-            {dayScripts.map(s => <span key={s.id} style={{ width:6, height:6, borderRadius:'50%', background: s.platform==='youtube' ? '#c00' : s.platform==='tiktok' ? '#555' : '#888', display:'block' }} />)}
+          style={{ aspectRatio:'1', border:`0.5px solid ${isToday ? 'var(--text)' : 'var(--border)'}`, borderRadius:4, padding:6, cursor:'pointer', display:'flex', flexDirection:'column', justifyContent:'space-between' }}>
+          <div style={{ fontSize:'0.75em', color: isToday ? 'var(--text)' : 'var(--text3)', fontWeight: isToday ? 600 : 400 }}>{d}</div>
+          <div style={{ display:'flex', flexWrap:'wrap', gap:2 }}>
+            {dayScripts.map(s => <span key={s.id} style={{ width:5, height:5, borderRadius:'50%', background: s.platform==='youtube' ? '#c00' : s.platform==='tiktok' ? '#555' : '#888', display:'block' }} />)}
           </div>
         </div>
       )
@@ -191,68 +233,120 @@ export default function Dashboard({ user, onLogout }) {
     return cells
   }
 
-  const sidebarBtn = (label, isActive, onClick, dot) => (
-    <button onClick={onClick} style={{ display:'flex', alignItems:'center', gap:7, padding:'6px 8px', borderRadius:6, fontSize:12, border:'none', width:'100%', textAlign:'left', fontFamily:'inherit', cursor:'pointer', background: isActive ? 'var(--text)' : 'transparent', color: isActive ? 'var(--bg)' : 'var(--text2)', transition:'all .1s' }}>
-      {dot && <span style={{ width:8, height:8, borderRadius:'50%', background:dot, flexShrink:0 }} />}
+  const sBtn = (label, isActive, onClick, dot) => (
+    <button onClick={onClick} style={{ display:'flex', alignItems:'center', gap:6, padding:'5px 8px', borderRadius:4, fontSize:'0.85em', border:'none', width:'100%', textAlign:'left', fontFamily:'inherit', cursor:'pointer', background: isActive ? 'var(--text)' : 'transparent', color: isActive ? 'var(--bg)' : 'var(--text3)', transition:'all .1s' }}>
+      {dot && <span style={{ width:6, height:6, borderRadius:'50%', background:dot, flexShrink:0 }} />}
       {label}
     </button>
   )
 
+  const allTabs = [
+    { id:'pendientes', label:'Pendientes', removable:false },
+    { id:'calendario', label:'Calendario', removable:false },
+    { id:'guiones', label:'Guiones', removable:false },
+    { id:'edicion', label:'Edición', removable:false },
+    ...customTabs.map(ct => ({ id:'ct-'+ct.id, label:ct.label, removable:true, dbId:ct.id }))
+  ]
+
+  // Focus overlay
+  if (focusActive) return (
+    <div style={{ height:'100vh', background:'#000', display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', gap:32, color:'#fff' }}>
+      <div style={{ fontSize:'0.9em', letterSpacing:'0.15em', color:'#555', textTransform:'uppercase' }}>{focusLabel}</div>
+      <div style={{ fontSize:'5em', fontWeight:300, letterSpacing:'0.05em', fontVariantNumeric:'tabular-nums' }}>{formatTime(focusSeconds)}</div>
+      <div style={{ display:'flex', gap:12 }}>
+        <button onClick={() => setFocusRunning(r => !r)} style={{ width:48, height:48, borderRadius:'50%', background:'#fff', border:'none', cursor:'pointer', fontSize:'1.2em', display:'flex', alignItems:'center', justifyContent:'center' }}>
+          {focusRunning ? '⏸' : '▶'}
+        </button>
+        <button onClick={stopFocus} style={{ width:48, height:48, borderRadius:'50%', background:'#222', border:'none', cursor:'pointer', fontSize:'1.2em', display:'flex', alignItems:'center', justifyContent:'center' }}>
+          ■
+        </button>
+      </div>
+      <div style={{ display:'flex', gap:8 }}>
+        {[15,25,45,60].map(m => (
+          <button key={m} onClick={() => { setFocusSeconds(m*60); setFocusRunning(false) }}
+            style={{ padding:'4px 10px', borderRadius:20, border:'0.5px solid #333', background:'transparent', color:'#555', fontSize:'0.8em', cursor:'pointer', fontFamily:'inherit' }}>
+            {m}m
+          </button>
+        ))}
+      </div>
+      <div style={{ fontSize:'0.75em', color:'#333', marginTop:8 }}>Las notificaciones están silenciadas mientras trabajas</div>
+    </div>
+  )
+
   return (
-    <div style={{ display:'grid', gridTemplateColumns:'196px 1fr', gridTemplateRows:'52px 1fr', height:'100vh', background:'var(--bg)', overflow:'hidden' }}>
+    <div style={{ display:'grid', gridTemplateColumns:'180px 1fr', gridTemplateRows:'44px 1fr', height:'100vh', background:'var(--bg)', overflow:'hidden', fontSize: fontSize + 'px' }}>
 
       {/* TOPBAR */}
-      <div style={{ gridColumn:'1/-1', borderBottom:'0.5px solid var(--border)', display:'flex', alignItems:'center', padding:'0 16px', gap:6, background:'var(--bg)' }}>
-        <div style={{ fontSize:13, fontWeight:500, letterSpacing:'.04em', marginRight:8 }}>Studio</div>
-        <div style={{ display:'flex', gap:2, flex:1, overflowX:'auto', alignItems:'center' }}>
+      <div style={{ gridColumn:'1/-1', borderBottom:'0.5px solid var(--border)', display:'flex', alignItems:'center', padding:'0 14px', gap:4, background:'var(--bg)' }}>
+        <div style={{ fontSize:'0.9em', fontWeight:500, letterSpacing:'.06em', marginRight:10, color:'var(--text2)' }}>Studio</div>
+        <div style={{ display:'flex', gap:1, flex:1, overflowX:'auto', alignItems:'center' }}>
           {allTabs.map(tab => (
             <button key={tab.id} onClick={() => setActiveTab(tab.id)}
-              style={{ background:'none', border:'none', padding:'5px 11px', borderRadius:6, fontSize:12, cursor:'pointer', color: activeTab===tab.id ? 'var(--bg)' : 'var(--text2)', backgroundColor: activeTab===tab.id ? 'var(--text)' : 'transparent', fontFamily:'inherit', whiteSpace:'nowrap', display:'flex', alignItems:'center', gap:5 }}>
+              style={{ background: activeTab===tab.id ? 'var(--text)' : 'none', border:'none', padding:'4px 10px', borderRadius:4, fontSize:'0.85em', cursor:'pointer', color: activeTab===tab.id ? 'var(--bg)' : 'var(--text3)', fontFamily:'inherit', whiteSpace:'nowrap', display:'flex', alignItems:'center', gap:4 }}>
               {tab.label}
-              {tab.removable && <span onClick={e => { e.stopPropagation(); removeCustomTab(tab.dbId) }} style={{ fontSize:10, opacity:.6, cursor:'pointer' }}>✕</span>}
+              {tab.removable && <span onClick={e => { e.stopPropagation(); removeCustomTab(tab.dbId) }} style={{ fontSize:'0.7em', opacity:.5, cursor:'pointer' }}>✕</span>}
             </button>
           ))}
-          <button onClick={() => setShowAddTab(true)} style={{ background:'none', border:'0.5px dashed var(--border2)', borderRadius:6, padding:'4px 10px', fontSize:11, cursor:'pointer', color:'var(--text3)', fontFamily:'inherit', whiteSpace:'nowrap' }}>+ pestaña</button>
+          <button onClick={() => setShowAddTab(true)} style={{ background:'none', border:'none', padding:'4px 8px', fontSize:'0.8em', cursor:'pointer', color:'var(--text3)', fontFamily:'inherit' }}>+ tab</button>
         </div>
+
+        {/* Focus button */}
+        <button onClick={startFocus} style={{ padding:'4px 10px', border:'0.5px solid var(--border2)', borderRadius:4, fontSize:'0.8em', cursor:'pointer', background:'none', color:'var(--text2)', fontFamily:'inherit', display:'flex', alignItems:'center', gap:5 }}>
+          ◉ Focus
+        </button>
+
+        {/* Font size */}
         <div style={{ position:'relative' }}>
-          <button onClick={() => setShowProfile(!showProfile)} style={{ width:28, height:28, borderRadius:'50%', border:'0.5px solid var(--border2)', background:'var(--bg2)', display:'flex', alignItems:'center', justifyContent:'center', cursor:'pointer', fontSize:11, fontWeight:500 }}>
+          <button onClick={() => setShowFontSlider(s => !s)} style={{ padding:'4px 8px', border:'0.5px solid var(--border)', borderRadius:4, fontSize:'0.8em', cursor:'pointer', background:'none', color:'var(--text3)', fontFamily:'inherit' }}>Aa</button>
+          {showFontSlider && (
+            <div style={{ position:'absolute', right:0, top:34, background:'var(--bg)', border:'0.5px solid var(--border2)', borderRadius:8, padding:'10px 14px', zIndex:100, boxShadow:'0 4px 16px rgba(0,0,0,.1)', width:180 }}>
+              <div style={{ fontSize:'0.8em', color:'var(--text3)', marginBottom:8 }}>Tamaño de letra: {fontSize}px</div>
+              <input type="range" min="11" max="18" step="0.5" value={fontSize} onChange={e => setFontSize(parseFloat(e.target.value))} style={{ width:'100%', cursor:'pointer' }} />
+              <div style={{ display:'flex', justifyContent:'space-between', fontSize:'0.75em', color:'var(--text3)', marginTop:4 }}>
+                <span>A</span><span style={{ fontSize:'1.2em' }}>A</span>
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Profile */}
+        <div style={{ position:'relative' }}>
+          <button onClick={() => setShowProfile(!showProfile)} style={{ width:26, height:26, borderRadius:'50%', border:'0.5px solid var(--border2)', background:'var(--bg2)', display:'flex', alignItems:'center', justifyContent:'center', cursor:'pointer', fontSize:'0.8em', fontWeight:500 }}>
             {user.user_metadata?.full_name?.[0]?.toUpperCase() || user.email?.[0]?.toUpperCase() || 'U'}
           </button>
           {showProfile && (
-            <div style={{ position:'absolute', right:0, top:36, background:'var(--bg)', border:'0.5px solid var(--border2)', borderRadius:8, padding:12, zIndex:100, minWidth:180, boxShadow:'0 4px 16px rgba(0,0,0,.08)' }}>
-              <div style={{ fontSize:12, fontWeight:500, marginBottom:2 }}>{user.user_metadata?.full_name || 'Usuario'}</div>
-              <div style={{ fontSize:11, color:'var(--text3)', marginBottom:12 }}>{user.email}</div>
-              <button onClick={onLogout} style={{ width:'100%', padding:6, border:'0.5px solid var(--border2)', borderRadius:6, fontSize:12, background:'none', cursor:'pointer', color:'var(--text2)', fontFamily:'inherit' }}>
-                Cerrar sesión
-              </button>
+            <div style={{ position:'absolute', right:0, top:34, background:'var(--bg)', border:'0.5px solid var(--border2)', borderRadius:8, padding:12, zIndex:100, minWidth:180, boxShadow:'0 4px 16px rgba(0,0,0,.08)' }}>
+              <div style={{ fontSize:'0.9em', fontWeight:500, marginBottom:2 }}>{user.user_metadata?.full_name || 'Usuario'}</div>
+              <div style={{ fontSize:'0.8em', color:'var(--text3)', marginBottom:12 }}>{user.email}</div>
+              <button onClick={onLogout} style={{ width:'100%', padding:6, border:'0.5px solid var(--border2)', borderRadius:6, fontSize:'0.85em', background:'none', cursor:'pointer', color:'var(--text2)', fontFamily:'inherit' }}>Cerrar sesión</button>
             </div>
           )}
         </div>
       </div>
 
       {/* SIDEBAR */}
-      <div style={{ borderRight:'0.5px solid var(--border)', padding:'14px 10px', display:'flex', flexDirection:'column', gap:3, overflowY:'auto', background:'var(--bg)' }}>
-        <div style={{ fontSize:10, fontWeight:500, color:'var(--text3)', letterSpacing:'.07em', textTransform:'uppercase', padding:'8px 8px 4px' }}>Plataforma</div>
-        {sidebarBtn('Todo', filterPlatform==='todos', () => setFilterPlatform('todos'), null)}
-        {sidebarBtn('YouTube', filterPlatform==='youtube', () => setFilterPlatform('youtube'), '#c00')}
-        {sidebarBtn('TikTok', filterPlatform==='tiktok', () => setFilterPlatform('tiktok'), '#555')}
-        {sidebarBtn('Instagram', filterPlatform==='instagram', () => setFilterPlatform('instagram'), '#888')}
-        <div style={{ fontSize:10, fontWeight:500, color:'var(--text3)', letterSpacing:'.07em', textTransform:'uppercase', padding:'8px 8px 4px', marginTop:6 }}>Estado</div>
-        {sidebarBtn('Todos', filterStatus==='todos', () => setFilterStatus('todos'), null)}
-        {sidebarBtn('Pendiente', filterStatus==='pendiente', () => setFilterStatus('pendiente'), '#f59e0b')}
-        {sidebarBtn('En proceso', filterStatus==='en-proceso', () => setFilterStatus('en-proceso'), '#7c6deb')}
-        {sidebarBtn('Completado', filterStatus==='completado', () => setFilterStatus('completado'), '#22c55e')}
+      <div style={{ borderRight:'0.5px solid var(--border)', padding:'12px 8px', display:'flex', flexDirection:'column', gap:2, overflowY:'auto', background:'var(--bg)' }}>
+        <div style={{ fontSize:'0.7em', fontWeight:600, color:'var(--text3)', letterSpacing:'.1em', textTransform:'uppercase', padding:'6px 8px 3px' }}>Plataforma</div>
+        {sBtn('Todo', filterPlatform==='todos', () => setFilterPlatform('todos'), null)}
+        {sBtn('YouTube', filterPlatform==='youtube', () => setFilterPlatform('youtube'), '#c00')}
+        {sBtn('TikTok', filterPlatform==='tiktok', () => setFilterPlatform('tiktok'), '#555')}
+        {sBtn('Instagram', filterPlatform==='instagram', () => setFilterPlatform('instagram'), '#888')}
+        <div style={{ fontSize:'0.7em', fontWeight:600, color:'var(--text3)', letterSpacing:'.1em', textTransform:'uppercase', padding:'10px 8px 3px' }}>Estado</div>
+        {sBtn('Todos', filterStatus==='todos', () => setFilterStatus('todos'), null)}
+        {sBtn('Pendiente', filterStatus==='pendiente', () => setFilterStatus('pendiente'), '#f59e0b')}
+        {sBtn('En proceso', filterStatus==='en-proceso', () => setFilterStatus('en-proceso'), '#7c6deb')}
+        {sBtn('Completado', filterStatus==='completado', () => setFilterStatus('completado'), '#22c55e')}
       </div>
 
       {/* MAIN */}
       <div style={{ overflowY:'auto', background:'var(--bg)', padding:20 }}>
 
         {showAddTab && (
-          <div style={{ border:'0.5px solid var(--border2)', borderRadius:10, padding:14, marginBottom:14, display:'flex', flexDirection:'column', gap:8 }}>
-            <input value={newTabName} onChange={e => setNewTabName(e.target.value)} onKeyDown={e => e.key==='Enter' && addCustomTab()} placeholder="Nombre de la pestaña..." style={{ padding:'6px 10px', border:'0.5px solid var(--border2)', borderRadius:6, fontSize:12 }} />
+          <div style={{ border:'0.5px solid var(--border2)', borderRadius:8, padding:12, marginBottom:12, display:'flex', flexDirection:'column', gap:6 }}>
+            <input value={newTabName} onChange={e => setNewTabName(e.target.value)} onKeyDown={e => e.key==='Enter' && addCustomTab()} placeholder="Nombre de la pestaña..." style={{ padding:'6px 10px', border:'0.5px solid var(--border2)', borderRadius:4, fontSize:'0.9em' }} />
             <div style={{ display:'flex', gap:6 }}>
-              <button onClick={addCustomTab} style={{ flex:1, padding:6, border:'none', borderRadius:6, fontSize:12, cursor:'pointer', background:'var(--text)', color:'var(--bg)', fontFamily:'inherit' }}>Agregar</button>
-              <button onClick={() => setShowAddTab(false)} style={{ flex:1, padding:6, border:'0.5px solid var(--border2)', borderRadius:6, fontSize:12, cursor:'pointer', background:'none', color:'var(--text2)', fontFamily:'inherit' }}>Cancelar</button>
+              <button onClick={addCustomTab} style={{ flex:1, padding:6, border:'none', borderRadius:4, fontSize:'0.85em', cursor:'pointer', background:'var(--text)', color:'var(--bg)', fontFamily:'inherit' }}>Agregar</button>
+              <button onClick={() => setShowAddTab(false)} style={{ flex:1, padding:6, border:'0.5px solid var(--border2)', borderRadius:4, fontSize:'0.85em', cursor:'pointer', background:'none', color:'var(--text2)', fontFamily:'inherit' }}>Cancelar</button>
             </div>
           </div>
         )}
@@ -260,25 +354,25 @@ export default function Dashboard({ user, onLogout }) {
         {/* PENDIENTES */}
         {activeTab === 'pendientes' && (
           <div>
-            <div style={{ fontSize:13, fontWeight:500, marginBottom:4 }}>Pendientes</div>
-            <div style={{ fontSize:11, color:'var(--text3)', marginBottom:16 }}>Tarea completada = desaparece automáticamente</div>
-            <div style={{ display:'flex', gap:6, marginBottom:16 }}>
-              <input value={taskInput} onChange={e => setTaskInput(e.target.value)} onKeyDown={e => e.key==='Enter' && addTask()} placeholder="Nueva tarea..." style={{ flex:1, padding:'7px 10px', border:'0.5px solid var(--border2)', borderRadius:7, fontSize:12 }} />
-              <select value={taskPlatform} onChange={e => setTaskPlatform(e.target.value)} style={{ padding:'7px 8px', border:'0.5px solid var(--border2)', borderRadius:7, fontSize:12, cursor:'pointer' }}>
+            <div style={{ fontSize:'1em', fontWeight:500, marginBottom:3 }}>Pendientes</div>
+            <div style={{ fontSize:'0.8em', color:'var(--text3)', marginBottom:14 }}>Completada → desaparece sola</div>
+            <div style={{ display:'flex', gap:6, marginBottom:14 }}>
+              <input value={taskInput} onChange={e => setTaskInput(e.target.value)} onKeyDown={e => e.key==='Enter' && addTask()} placeholder="Nueva tarea..." style={{ flex:1, padding:'6px 10px', border:'0.5px solid var(--border2)', borderRadius:4, fontSize:'0.9em' }} />
+              <select value={taskPlatform} onChange={e => setTaskPlatform(e.target.value)} style={{ padding:'6px 8px', border:'0.5px solid var(--border2)', borderRadius:4, fontSize:'0.85em', cursor:'pointer' }}>
                 {['general','youtube','tiktok','instagram'].map(p => <option key={p} value={p}>{p}</option>)}
               </select>
-              <button onClick={addTask} style={{ padding:'7px 12px', border:'none', borderRadius:7, fontSize:12, cursor:'pointer', background:'var(--text)', color:'var(--bg)', fontFamily:'inherit' }}>+ Agregar</button>
+              <button onClick={addTask} style={{ padding:'6px 12px', border:'none', borderRadius:4, fontSize:'0.85em', cursor:'pointer', background:'var(--text)', color:'var(--bg)', fontFamily:'inherit' }}>+</button>
             </div>
             {filteredTasks.length === 0
-              ? <div style={{ textAlign:'center', color:'var(--text3)', fontSize:12, padding:'32px 0' }}>Sin tareas. ¡A crear contenido!</div>
+              ? <div style={{ textAlign:'center', color:'var(--text3)', fontSize:'0.85em', padding:'28px 0' }}>Sin tareas.</div>
               : filteredTasks.map(task => (
                 <div key={task.id} draggable onDragStart={() => setDragTaskId(task.id)} onDragOver={e => e.preventDefault()} onDrop={() => dropTask(task.id)}
-                  style={{ display:'flex', alignItems:'center', gap:10, padding:'9px 12px', borderRadius:8, border:`0.5px solid ${STATUS_COLORS[task.status]}33`, background:STATUS_BG[task.status], marginBottom:6, fontSize:12, cursor:'grab', userSelect:'none', transition:'all .2s', opacity: task.status==='completado' ? .45 : 1 }}>
-                  <span style={{ color:'var(--text3)', fontSize:11 }}>⠿</span>
-                  <span onClick={() => cycleStatus(task.id)} style={{ width:9, height:9, borderRadius:'50%', background:STATUS_COLORS[task.status], flexShrink:0, cursor:'pointer' }} title="Cambiar estado" />
+                  style={{ display:'flex', alignItems:'center', gap:8, padding:'7px 10px', borderRadius:6, border:`0.5px solid ${STATUS_COLORS[task.status]}33`, background:STATUS_BG[task.status], marginBottom:5, fontSize:'0.9em', cursor:'grab', userSelect:'none', transition:'all .2s', opacity: task.status==='completado' ? .4 : 1 }}>
+                  <span style={{ color:'var(--text3)', fontSize:'0.8em' }}>⠿</span>
+                  <span onClick={() => cycleStatus(task.id)} style={{ width:8, height:8, borderRadius:'50%', background:STATUS_COLORS[task.status], flexShrink:0, cursor:'pointer' }} />
                   <span style={{ flex:1 }}>{task.text}</span>
-                  <span style={{ fontSize:10, padding:'2px 7px', borderRadius:999, border:'0.5px solid var(--border)', color:'var(--text3)' }}>{task.platform}</span>
-                  <button onClick={() => deleteTask(task.id)} style={{ background:'none', border:'none', color:'var(--text3)', fontSize:14, opacity:.5, cursor:'pointer' }}>✕</button>
+                  <span style={{ fontSize:'0.75em', padding:'1px 6px', borderRadius:999, border:'0.5px solid var(--border)', color:'var(--text3)' }}>{task.platform}</span>
+                  <button onClick={() => deleteTask(task.id)} style={{ background:'none', border:'none', color:'var(--text3)', fontSize:'0.9em', opacity:.4, cursor:'pointer' }}>✕</button>
                 </div>
               ))
             }
@@ -288,13 +382,13 @@ export default function Dashboard({ user, onLogout }) {
         {/* CALENDARIO */}
         {activeTab === 'calendario' && (
           <div>
-            <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:16 }}>
-              <button onClick={() => { let m=calMonth-1, y=calYear; if(m<0){m=11;y--;} setCalMonth(m); setCalYear(y) }} style={{ background:'none', border:'0.5px solid var(--border)', borderRadius:6, padding:'4px 10px', cursor:'pointer', fontSize:13, color:'var(--text2)', fontFamily:'inherit' }}>←</button>
-              <span style={{ fontSize:14, fontWeight:500 }}>{MONTHS[calMonth]} {calYear}</span>
-              <button onClick={() => { let m=calMonth+1, y=calYear; if(m>11){m=0;y++;} setCalMonth(m); setCalYear(y) }} style={{ background:'none', border:'0.5px solid var(--border)', borderRadius:6, padding:'4px 10px', cursor:'pointer', fontSize:13, color:'var(--text2)', fontFamily:'inherit' }}>→</button>
+            <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:14 }}>
+              <button onClick={() => { let m=calMonth-1,y=calYear; if(m<0){m=11;y--;} setCalMonth(m);setCalYear(y) }} style={{ background:'none', border:'none', cursor:'pointer', fontSize:'1.1em', color:'var(--text3)', padding:'0 6px' }}>←</button>
+              <span style={{ fontSize:'0.95em', fontWeight:500 }}>{MONTHS[calMonth]} {calYear}</span>
+              <button onClick={() => { let m=calMonth+1,y=calYear; if(m>11){m=0;y++;} setCalMonth(m);setCalYear(y) }} style={{ background:'none', border:'none', cursor:'pointer', fontSize:'1.1em', color:'var(--text3)', padding:'0 6px' }}>→</button>
             </div>
             <div style={{ display:'grid', gridTemplateColumns:'repeat(7,1fr)', gap:3 }}>
-              {DAYS.map(d => <div key={d} style={{ textAlign:'center', fontSize:10, color:'var(--text3)', padding:'4px 0', textTransform:'uppercase' }}>{d}</div>)}
+              {DAYS.map(d => <div key={d} style={{ textAlign:'center', fontSize:'0.7em', color:'var(--text3)', paddingBottom:4, textTransform:'uppercase', letterSpacing:'.05em' }}>{d}</div>)}
               {renderCalendar()}
             </div>
           </div>
@@ -303,29 +397,29 @@ export default function Dashboard({ user, onLogout }) {
         {/* GUIONES */}
         {activeTab === 'guiones' && (
           <div>
-            <button onClick={newScript} style={{ display:'flex', alignItems:'center', gap:5, padding:'7px 12px', border:'0.5px dashed var(--border2)', borderRadius:7, background:'none', cursor:'pointer', fontSize:12, color:'var(--text2)', fontFamily:'inherit', width:'100%', marginBottom:14 }}>+ Nuevo guión</button>
+            <button onClick={newScript} style={{ display:'flex', alignItems:'center', gap:4, padding:'6px 12px', border:'0.5px dashed var(--border2)', borderRadius:4, background:'none', cursor:'pointer', fontSize:'0.85em', color:'var(--text3)', fontFamily:'inherit', width:'100%', marginBottom:12 }}>+ Nuevo guión</button>
             {scripts.filter(s => filterPlatform==='todos' || s.platform===filterPlatform).map(script => (
-              <div key={script.id} onClick={() => setSelectedScript(script)} style={{ display:'flex', alignItems:'center', gap:10, padding:'9px 12px', border:`0.5px solid ${selectedScript?.id===script.id ? 'var(--text)' : 'var(--border)'}`, borderRadius:8, marginBottom:6, cursor:'pointer', fontSize:12 }}>
+              <div key={script.id} onClick={() => setSelectedScript(script)} style={{ display:'flex', alignItems:'center', gap:8, padding:'7px 10px', border:`0.5px solid ${selectedScript?.id===script.id ? 'var(--text)' : 'var(--border)'}`, borderRadius:6, marginBottom:5, cursor:'pointer', fontSize:'0.9em' }}>
                 <span style={{ flex:1, fontWeight:500 }}>{script.title}</span>
-                <span style={{ fontSize:10, color:'var(--text3)' }}>{script.sched_date || 'Sin fecha'}</span>
-                <span style={{ fontSize:10, padding:'2px 7px', borderRadius:999, border:'0.5px solid var(--border)', color:'var(--text3)' }}>{script.platform}</span>
+                <span style={{ fontSize:'0.75em', color:'var(--text3)' }}>{script.sched_date || '—'}</span>
+                <span style={{ fontSize:'0.75em', padding:'1px 6px', borderRadius:999, border:'0.5px solid var(--border)', color:'var(--text3)' }}>{script.platform}</span>
               </div>
             ))}
             {selectedScript && (
-              <div style={{ border:'0.5px solid var(--border)', borderRadius:10, overflow:'hidden', marginTop:16 }}>
-                <div style={{ display:'flex', alignItems:'center', gap:6, padding:'9px 14px', borderBottom:'0.5px solid var(--border)', background:'var(--bg2)', flexWrap:'wrap' }}>
-                  <input value={selectedScript.title} onChange={e => updateScript('title', e.target.value)} style={{ flex:1, border:'none', background:'transparent', fontSize:13, fontWeight:500, fontFamily:'inherit', color:'var(--text)', minWidth:120 }} />
+              <div style={{ border:'0.5px solid var(--border)', borderRadius:8, overflow:'hidden', marginTop:14 }}>
+                <div style={{ display:'flex', alignItems:'center', gap:5, padding:'8px 12px', borderBottom:'0.5px solid var(--border)', background:'var(--bg2)', flexWrap:'wrap' }}>
+                  <input value={selectedScript.title} onChange={e => updateScript('title', e.target.value)} style={{ flex:1, border:'none', background:'transparent', fontSize:'0.95em', fontWeight:500, fontFamily:'inherit', color:'var(--text)', minWidth:100 }} />
                   {['youtube','tiktok','instagram'].map(p => (
-                    <button key={p} onClick={() => updateScript('platform', p)} style={{ padding:'3px 8px', border:'0.5px solid var(--border2)', borderRadius:6, fontSize:11, cursor:'pointer', background: selectedScript.platform===p ? 'var(--text)' : 'none', color: selectedScript.platform===p ? 'var(--bg)' : 'var(--text2)', fontFamily:'inherit' }}>{p}</button>
+                    <button key={p} onClick={() => updateScript('platform', p)} style={{ padding:'2px 7px', border:'0.5px solid var(--border2)', borderRadius:4, fontSize:'0.75em', cursor:'pointer', background: selectedScript.platform===p ? 'var(--text)' : 'none', color: selectedScript.platform===p ? 'var(--bg)' : 'var(--text2)', fontFamily:'inherit' }}>{p}</button>
                   ))}
-                  <button onClick={generateScript} disabled={aiLoading} style={{ padding:'4px 10px', background:'var(--text)', color:'var(--bg)', border:'none', borderRadius:6, fontSize:11, cursor:'pointer', fontFamily:'inherit', opacity: aiLoading ? .5 : 1 }}>
-                    {aiLoading ? 'Generando...' : '✦ Generar IA'}
+                  <button onClick={generateScript} disabled={aiLoading} style={{ padding:'3px 9px', background:'var(--text)', color:'var(--bg)', border:'none', borderRadius:4, fontSize:'0.8em', cursor:'pointer', fontFamily:'inherit', opacity: aiLoading ? .5 : 1 }}>
+                    {aiLoading ? '...' : '✦ IA'}
                   </button>
                 </div>
-                {[['hook','Hook / Gancho',3],['intro','Introducción',3],['desarrollo','Desarrollo',6],['cta','Call to Action',2],['notas','Notas de edición',2]].map(([field, label, rows]) => (
-                  <div key={field} style={{ borderBottom:'0.5px solid var(--border)', padding:'12px 14px' }}>
-                    <div style={{ fontSize:10, fontWeight:500, letterSpacing:'.06em', textTransform:'uppercase', color:'var(--text3)', marginBottom:6 }}>{label}</div>
-                    <textarea value={selectedScript[field] || ''} onChange={e => updateScript(field, e.target.value)} rows={rows} style={{ width:'100%', border:'none', background:'transparent', fontFamily:'inherit', fontSize:12, lineHeight:1.6, color:'var(--text)', minHeight:44 }} />
+                {[['hook','Hook'],['intro','Introducción'],['desarrollo','Desarrollo'],['cta','Call to Action'],['notas','Notas']].map(([field, label]) => (
+                  <div key={field} style={{ borderBottom:'0.5px solid var(--border)', padding:'10px 12px' }}>
+                    <div style={{ fontSize:'0.7em', fontWeight:600, letterSpacing:'.08em', textTransform:'uppercase', color:'var(--text3)', marginBottom:5 }}>{label}</div>
+                    <textarea value={selectedScript[field] || ''} onChange={e => updateScript(field, e.target.value)} rows={field==='desarrollo' ? 5 : 2} style={{ width:'100%', border:'none', background:'transparent', fontFamily:'inherit', fontSize:'0.9em', lineHeight:1.6, color:'var(--text)', minHeight:36 }} />
                   </div>
                 ))}
               </div>
@@ -336,34 +430,31 @@ export default function Dashboard({ user, onLogout }) {
         {/* EDICIÓN */}
         {activeTab === 'edicion' && (
           <div>
-            <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:14 }}>
-              <div>
-                <div style={{ fontSize:13, fontWeight:500 }}>Panel de edición</div>
-                <div style={{ fontSize:11, color:'var(--text3)', marginTop:2 }}>Arrastra proyectos entre columnas</div>
-              </div>
-              <button onClick={addEditProject} style={{ padding:'5px 12px', border:'0.5px solid var(--border2)', borderRadius:6, fontSize:11, cursor:'pointer', fontFamily:'inherit', background:'none', color:'var(--text2)' }}>+ Proyecto</button>
+            <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:12 }}>
+              <div style={{ fontSize:'1em', fontWeight:500 }}>Panel de edición</div>
+              <button onClick={addEditProject} style={{ padding:'4px 10px', border:'0.5px solid var(--border2)', borderRadius:4, fontSize:'0.8em', cursor:'pointer', fontFamily:'inherit', background:'none', color:'var(--text3)' }}>+ Proyecto</button>
             </div>
             <div style={{ display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:8 }}>
               {EDIT_COLS.map(col => (
-                <div key={col} onDragOver={e => e.preventDefault()} onDrop={() => dropEditProject(col)} style={{ border:'0.5px solid var(--border)', borderRadius:8, overflow:'hidden' }}>
-                  <div style={{ padding:'8px 12px', fontSize:11, fontWeight:500, borderBottom:'0.5px solid var(--border)', background:'var(--bg2)', display:'flex', alignItems:'center', justifyContent:'space-between' }}>
+                <div key={col} onDragOver={e => e.preventDefault()} onDrop={() => dropEditProject(col)} style={{ border:'0.5px solid var(--border)', borderRadius:6, overflow:'hidden' }}>
+                  <div style={{ padding:'6px 10px', fontSize:'0.75em', fontWeight:600, borderBottom:'0.5px solid var(--border)', background:'var(--bg2)', display:'flex', alignItems:'center', justifyContent:'space-between', textTransform:'uppercase', letterSpacing:'.06em', color:'var(--text3)' }}>
                     <span>{EDIT_LABELS[col]}</span>
-                    <span style={{ fontSize:10, color:'var(--text3)' }}>{editProjects.filter(p => p.column_name===col).length}</span>
+                    <span>{editProjects.filter(p => p.column_name===col).length}</span>
                   </div>
                   <div>
                     {editProjects.filter(p => p.column_name===col).map(ep => (
-                      <div key={ep.id} draggable onDragStart={() => { setDragEpId(ep.id); setDragEpFrom(col) }} style={{ padding:'10px 12px', borderBottom:'0.5px solid var(--border)', fontSize:12, cursor:'grab', userSelect:'none' }}>
-                        <div style={{ fontWeight:500, marginBottom:4 }}>{ep.title}</div>
-                        <div style={{ display:'flex', alignItems:'center', gap:6 }}>
-                          <span style={{ fontSize:10, color:'var(--text3)' }}>{ep.platform}</span>
-                          <button onClick={() => { const n=prompt('Editor (vacío para quitar):'); if(n!==null) assignEditor(ep.id, n.trim()) }} style={{ fontSize:10, padding:'2px 7px', borderRadius:999, border:'0.5px solid var(--border)', color:'var(--text2)', background:'none', cursor:'pointer', fontFamily:'inherit' }}>
+                      <div key={ep.id} draggable onDragStart={() => setDragEpId(ep.id)} style={{ padding:'8px 10px', borderBottom:'0.5px solid var(--border)', fontSize:'0.85em', cursor:'grab', userSelect:'none' }}>
+                        <div style={{ fontWeight:500, marginBottom:3 }}>{ep.title}</div>
+                        <div style={{ display:'flex', alignItems:'center', gap:5 }}>
+                          <span style={{ fontSize:'0.75em', color:'var(--text3)' }}>{ep.platform}</span>
+                          <button onClick={() => { const n=prompt('Editor:'); if(n!==null) assignEditor(ep.id, n.trim()) }} style={{ fontSize:'0.75em', padding:'1px 6px', borderRadius:999, border:'0.5px solid var(--border)', color:'var(--text3)', background:'none', cursor:'pointer', fontFamily:'inherit' }}>
                             {ep.assignee || '+ Asignar'}
                           </button>
                         </div>
                       </div>
                     ))}
                     {editProjects.filter(p => p.column_name===col).length === 0 && (
-                      <div style={{ padding:12, fontSize:11, color:'var(--text3)', textAlign:'center' }}>Arrastra aquí</div>
+                      <div style={{ padding:10, fontSize:'0.8em', color:'var(--text3)', textAlign:'center' }}>Arrastra aquí</div>
                     )}
                   </div>
                 </div>
@@ -373,12 +464,11 @@ export default function Dashboard({ user, onLogout }) {
         )}
 
         {activeTab.startsWith('ct-') && (
-          <div style={{ textAlign:'center', color:'var(--text3)', fontSize:13, paddingTop:40 }}>
-            <div style={{ fontWeight:500, marginBottom:8 }}>{allTabs.find(t => t.id===activeTab)?.label}</div>
-            <div style={{ fontSize:12 }}>Pestaña personalizada lista para usar.</div>
+          <div style={{ textAlign:'center', color:'var(--text3)', fontSize:'0.9em', paddingTop:40 }}>
+            <div style={{ fontWeight:500, marginBottom:6 }}>{allTabs.find(t => t.id===activeTab)?.label}</div>
+            <div style={{ fontSize:'0.85em' }}>Pestaña personalizada lista para usar.</div>
           </div>
         )}
-
       </div>
     </div>
   )
