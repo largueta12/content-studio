@@ -324,7 +324,7 @@ export default function Dashboard({ user, onLogout }) {
               {focusRunning ? '⏸' : '▶'}
             </button>
             <span style={{ fontSize:'0.95em', fontWeight:500, color:'#fff', fontVariantNumeric:'tabular-nums', letterSpacing:'0.05em' }}>{formatTime(focusSeconds)}</span>
-            <div style={{ display:'flex', gap:4' }}>
+            <div style={{ display:'flex', gap:'4px' }}>
               {[15,25,45,60].map(m => (
                 <button key={m} onClick={() => { setFocusSeconds(m*60); setFocusRunning(false) }}
                   style={{ padding:'2px 7px', borderRadius:10, border:'0.5px solid #333', background:'transparent', color:'#555', fontSize:'0.72em', cursor:'pointer', fontFamily:'inherit' }}>{m}m</button>
