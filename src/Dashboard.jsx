@@ -7,6 +7,7 @@ const MONTHS = ['Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto
 const DAYS = ['Dom','Lun','Mar','Mié','Jue','Vie','Sáb']
 const EDIT_COLS = ['sin-asignar','en-edicion','revision','listo']
 const EDIT_LABELS = {'sin-asignar':'Sin asignar','en-edicion':'En edición','revision':'Revisión','listo':'Listo'}
+const PLAT_COLOR = { youtube:'#c00', tiktok:'#666', instagram:'#888', general:'#aaa' }
 
 export default function Dashboard({ user, onLogout }) {
   const [activeTab, setActiveTab] = useState('pendientes')
@@ -19,10 +20,12 @@ export default function Dashboard({ user, onLogout }) {
   const [filterStatus, setFilterStatus] = useState('todos')
   const [taskInput, setTaskInput] = useState('')
   const [taskPlatform, setTaskPlatform] = useState('general')
+  const [taskDueDate, setTaskDueDate] = useState('')
   const [newTabName, setNewTabName] = useState('')
   const [showAddTab, setShowAddTab] = useState(false)
   const [calMonth, setCalMonth] = useState(new Date().getMonth())
   const [calYear, setCalYear] = useState(new Date().getFullYear())
+  const [selectedDay, setSelectedDay] = useState(null)
   const [aiLoading, setAiLoading] = useState(false)
   const [showProfile, setShowProfile] = useState(false)
   const [dragTaskId, setDragTaskId] = useState(null)
@@ -54,16 +57,14 @@ export default function Dashboard({ user, onLogout }) {
     document.querySelectorAll('audio, video').forEach(el => { try { el.pause() } catch(e) {} })
     if ('Notification' in window) await Notification.requestPermission()
     if ('wakeLock' in navigator) { try { await navigator.wakeLock.request('screen') } catch(e) {} }
-    setFocusActive(true)
-    setFocusRunning(true)
+    setFocusActive(true); setFocusRunning(true)
     setFocusProjectId(selectedScript?.id || null)
     setFocusSeconds(25 * 60)
   }
 
   const finishFocus = async () => {
     clearInterval(timerRef.current)
-    setFocusActive(false)
-    setFocusRunning(false)
+    setFocusActive(false); setFocusRunning(false)
     if (focusProjectId) {
       setScripts(p => p.map(s => s.id === focusProjectId ? {...s, status:'listo'} : s))
       if (selectedScript?.id === focusProjectId) setSelectedScript(prev => ({...prev, status:'listo'}))
@@ -89,9 +90,13 @@ export default function Dashboard({ user, onLogout }) {
 
   const addTask = async () => {
     if (!taskInput.trim()) return
-    const { data } = await supabase.from('tasks').insert({ user_id: user.id, text: taskInput.trim(), platform: taskPlatform, status: 'pendiente', position: tasks.length }).select().single()
+    const { data } = await supabase.from('tasks').insert({
+      user_id: user.id, text: taskInput.trim(), platform: taskPlatform,
+      status: 'pendiente', position: tasks.length,
+      due_date: taskDueDate || null
+    }).select().single()
     if (data) setTasks(p => [...p, data])
-    setTaskInput('')
+    setTaskInput(''); setTaskDueDate('')
   }
 
   const cycleStatus = async (id) => {
@@ -117,9 +122,14 @@ export default function Dashboard({ user, onLogout }) {
     await Promise.all(r.map((t, i) => supabase.from('tasks').update({ position: i }).eq('id', t.id)))
   }
 
-  const newScript = async () => {
-    const { data } = await supabase.from('scripts').insert({ user_id: user.id, title: 'Nuevo guión', platform: filterPlatform !== 'todos' ? filterPlatform : 'youtube', status: 'idea', hook:'', intro:'', desarrollo:'', cta:'', notas:'' }).select().single()
-    if (data) { setScripts(p => [data, ...p]); setSelectedScript(data) }
+  const newScript = async (date) => {
+    const { data } = await supabase.from('scripts').insert({
+      user_id: user.id, title: 'Nuevo guión',
+      platform: filterPlatform !== 'todos' ? filterPlatform : 'youtube',
+      status: 'idea', hook:'', intro:'', desarrollo:'', cta:'', notas:'',
+      sched_date: date || null
+    }).select().single()
+    if (data) { setScripts(p => [data, ...p]); setSelectedScript(data); setActiveTab('guiones') }
   }
 
   const deleteScript = async (id) => {
@@ -172,22 +182,36 @@ export default function Dashboard({ user, onLogout }) {
 
   const dropEditProject = async (toCol) => {
     if (!dragEpId) return
-    setEditProjects(p => p.map(ep => ep.id === dragEpId ? {...ep, column_name: toCol} : ep))
-    await supabase.from('edit_projects').update({ column_name: toCol }).eq('id', dragEpId)
+    const today = new Date().toISOString().split('T')[0]
+    setEditProjects(p => p.map(ep => ep.id === dragEpId ? {...ep, column_name: toCol, assigned_date: today} : ep))
+    await supabase.from('edit_projects').update({ column_name: toCol, assigned_date: today }).eq('id', dragEpId)
     setDragEpId(null)
   }
 
   const addEditProject = async () => {
     const title = prompt('Nombre del proyecto:')
     if (!title) return
-    const { data } = await supabase.from('edit_projects').insert({ user_id: user.id, title, platform: filterPlatform !== 'todos' ? filterPlatform : 'youtube', column_name: 'sin-asignar', assignee: '' }).select().single()
+    const { data } = await supabase.from('edit_projects').insert({
+      user_id: user.id, title, platform: filterPlatform !== 'todos' ? filterPlatform : 'youtube',
+      column_name: 'sin-asignar', assignee: ''
+    }).select().single()
     if (data) setEditProjects(p => [...p, data])
   }
 
   const assignEditor = async (epId, name) => {
-    setEditProjects(p => p.map(ep => ep.id === epId ? {...ep, assignee: name} : ep))
-    await supabase.from('edit_projects').update({ assignee: name }).eq('id', epId)
+    const today = new Date().toISOString().split('T')[0]
+    setEditProjects(p => p.map(ep => ep.id === epId ? {...ep, assignee: name, assigned_date: today} : ep))
+    await supabase.from('edit_projects').update({ assignee: name, assigned_date: today }).eq('id', epId)
   }
+
+  // Calendar helpers
+  const dateKey = (y, m, d) => `${y}-${m+1}-${d}`
+
+  const getCalItems = (key) => ({
+    scripts: scripts.filter(s => s.sched_date === key),
+    tasks: tasks.filter(t => t.due_date === key),
+    edits: editProjects.filter(ep => ep.assigned_date === key)
+  })
 
   const filteredTasks = tasks.filter(t => {
     const pOk = filterPlatform === 'todos' || t.platform === filterPlatform || t.platform === 'general'
@@ -195,12 +219,9 @@ export default function Dashboard({ user, onLogout }) {
     return pOk && sOk
   })
 
-  // Platform stats
   const platformStats = (platform) => {
     const all = scripts.filter(s => s.platform === platform)
-    const active = all.filter(s => s.status !== 'listo').length
-    const closed = all.filter(s => s.status === 'listo').length
-    return { active, closed, total: all.length }
+    return { active: all.filter(s => s.status !== 'listo').length, closed: all.filter(s => s.status === 'listo').length, total: all.length }
   }
 
   const renderCalendar = () => {
@@ -211,15 +232,20 @@ export default function Dashboard({ user, onLogout }) {
     for (let i = 0; i < first; i++) cells.push(<div key={'e'+i} />)
     for (let d = 1; d <= days; d++) {
       const isToday = d === today.getDate() && calMonth === today.getMonth() && calYear === today.getFullYear()
-      const key = `${calYear}-${calMonth+1}-${d}`
-      const dayScripts = scripts.filter(s => s.sched_date === key)
+      const key = dateKey(calYear, calMonth, d)
+      const items = getCalItems(key)
+      const total = items.scripts.length + items.tasks.length + items.edits.length
+      const isSelected = selectedDay === key
       cells.push(
-        <div key={d} onClick={() => selectedScript && selectedScript.status !== 'listo' && updateScript('sched_date', key)}
-          style={{ aspectRatio:'1', border:`0.5px solid ${isToday ? 'var(--text)' : 'var(--border)'}`, borderRadius:4, padding:5, cursor:'pointer', display:'flex', flexDirection:'column', justifyContent:'space-between' }}>
+        <div key={d} onClick={() => setSelectedDay(isSelected ? null : key)}
+          style={{ aspectRatio:'1', border:`0.5px solid ${isSelected ? 'var(--text)' : isToday ? 'var(--text)' : 'var(--border)'}`, borderRadius:4, padding:5, cursor:'pointer', display:'flex', flexDirection:'column', justifyContent:'space-between', background: isSelected ? 'var(--bg2)' : 'transparent', transition:'all .1s' }}>
           <div style={{ fontSize:'0.72em', color: isToday ? 'var(--text)' : 'var(--text3)', fontWeight: isToday ? 600 : 400 }}>{d}</div>
           <div style={{ display:'flex', flexWrap:'wrap', gap:2 }}>
-            {dayScripts.map(s => <span key={s.id} style={{ width:4, height:4, borderRadius:'50%', background: s.platform==='youtube' ? '#c00' : s.platform==='tiktok' ? '#555' : '#888', display:'block' }} />)}
+            {items.scripts.map(s => <span key={s.id} style={{ width:5, height:5, borderRadius:'50%', background: PLAT_COLOR[s.platform] || '#888', display:'block' }} title={s.title} />)}
+            {items.tasks.map(t => <span key={t.id} style={{ width:5, height:5, borderRadius:2, background: STATUS_COLORS[t.status], display:'block' }} title={t.text} />)}
+            {items.edits.map(ep => <span key={ep.id} style={{ width:5, height:5, borderRadius:'50%', background:'#7c6deb', display:'block', outline:'1px solid #7c6deb' }} title={ep.title} />)}
           </div>
+          {total > 0 && <div style={{ fontSize:'0.65em', color:'var(--text3)' }}>{total}</div>}
         </div>
       )
     }
@@ -236,11 +262,11 @@ export default function Dashboard({ user, onLogout }) {
 
   const isLocked = selectedScript?.status === 'listo'
 
-  const sBtn = (label, isActive, onClick, dot, extra) => (
+  const sBtn = (label, isActive, onClick, dot, badge) => (
     <button onClick={onClick} style={{ display:'flex', alignItems:'center', gap:6, padding:'5px 8px', borderRadius:4, fontSize:'0.82em', border:'none', width:'100%', textAlign:'left', fontFamily:'inherit', cursor:'pointer', background: isActive ? 'var(--text)' : 'transparent', color: isActive ? 'var(--bg)' : 'var(--text3)', transition:'all .1s' }}>
       {dot && <span style={{ width:6, height:6, borderRadius:'50%', background:dot, flexShrink:0 }} />}
       <span style={{ flex:1 }}>{label}</span>
-      {extra}
+      {badge !== undefined && <span style={{ fontSize:'0.75em', opacity:.6 }}>{badge}</span>}
     </button>
   )
 
@@ -255,20 +281,87 @@ export default function Dashboard({ user, onLogout }) {
           <span style={{ width:6, height:6, borderRadius:'50%', background:dot, flexShrink:0 }} />
           <span style={{ flex:1 }}>{label}</span>
           <span style={{ fontSize:'0.75em', opacity:.6 }}>{stats.total}</span>
-          <span style={{ fontSize:'0.7em', opacity:.5 }}>{isExpanded ? '▲' : '▼'}</span>
+          <span style={{ fontSize:'0.65em', opacity:.4 }}>{isExpanded ? '▲' : '▼'}</span>
         </button>
         {isExpanded && (
           <div style={{ margin:'3px 0 3px 20px', padding:'6px 8px', background:'var(--bg2)', borderRadius:4, fontSize:'0.76em', color:'var(--text3)', display:'flex', flexDirection:'column', gap:3 }}>
-            <div style={{ display:'flex', justifyContent:'space-between' }}>
-              <span>Activos</span>
-              <span style={{ fontWeight:500, color:'var(--text)' }}>{stats.active}</span>
-            </div>
-            <div style={{ display:'flex', justifyContent:'space-between' }}>
-              <span>Cerrados</span>
-              <span style={{ fontWeight:500, color:'var(--text)' }}>{stats.closed}</span>
-            </div>
+            <div style={{ display:'flex', justifyContent:'space-between' }}><span>Activos</span><span style={{ fontWeight:500, color:'var(--text)' }}>{stats.active}</span></div>
+            <div style={{ display:'flex', justifyContent:'space-between' }}><span>Cerrados</span><span style={{ fontWeight:500, color:'var(--text)' }}>{stats.closed}</span></div>
           </div>
         )}
+      </div>
+    )
+  }
+
+  // Day detail panel
+  const DayPanel = ({ dayKey }) => {
+    const items = getCalItems(dayKey)
+    const [d, m, y] = dayKey.split('-').reverse().map(Number)
+    const label = `${d} de ${MONTHS[m-1]} ${y}`
+    const [newTaskText, setNewTaskText] = useState('')
+
+    const addTaskFromCal = async () => {
+      if (!newTaskText.trim()) return
+      const { data } = await supabase.from('tasks').insert({
+        user_id: user.id, text: newTaskText.trim(), platform: 'general',
+        status: 'pendiente', position: tasks.length, due_date: dayKey
+      }).select().single()
+      if (data) { setTasks(p => [...p, data]); setNewTaskText('') }
+    }
+
+    return (
+      <div style={{ marginTop:14, border:'0.5px solid var(--border2)', borderRadius:8, overflow:'hidden' }}>
+        <div style={{ padding:'8px 12px', borderBottom:'0.5px solid var(--border)', background:'var(--bg2)', display:'flex', alignItems:'center', justifyContent:'space-between' }}>
+          <span style={{ fontSize:'0.85em', fontWeight:500 }}>{label}</span>
+          <button onClick={() => newScript(dayKey)} style={{ fontSize:'0.75em', padding:'2px 8px', border:'0.5px solid var(--border2)', borderRadius:4, background:'none', cursor:'pointer', color:'var(--text2)', fontFamily:'inherit' }}>+ Guión</button>
+        </div>
+
+        {items.scripts.length > 0 && (
+          <div style={{ padding:'8px 12px', borderBottom:'0.5px solid var(--border)' }}>
+            <div style={{ fontSize:'0.68em', fontWeight:600, color:'var(--text3)', letterSpacing:'.08em', textTransform:'uppercase', marginBottom:6 }}>Guiones</div>
+            {items.scripts.map(s => (
+              <div key={s.id} onClick={() => { setSelectedScript(s); setActiveTab('guiones') }}
+                style={{ display:'flex', alignItems:'center', gap:6, padding:'4px 0', cursor:'pointer', fontSize:'0.85em' }}>
+                <span style={{ width:6, height:6, borderRadius:'50%', background: PLAT_COLOR[s.platform], flexShrink:0 }} />
+                <span style={{ flex:1 }}>{s.title}</span>
+                <span style={{ fontSize:'0.72em', color:'var(--text3)' }}>{s.status}</span>
+                {s.status === 'listo' && <span>🔒</span>}
+              </div>
+            ))}
+          </div>
+        )}
+
+        {items.tasks.length > 0 && (
+          <div style={{ padding:'8px 12px', borderBottom:'0.5px solid var(--border)' }}>
+            <div style={{ fontSize:'0.68em', fontWeight:600, color:'var(--text3)', letterSpacing:'.08em', textTransform:'uppercase', marginBottom:6 }}>Pendientes</div>
+            {items.tasks.map(t => (
+              <div key={t.id} style={{ display:'flex', alignItems:'center', gap:6, padding:'4px 0', fontSize:'0.85em' }}>
+                <span onClick={() => cycleStatus(t.id)} style={{ width:7, height:7, borderRadius:'50%', background: STATUS_COLORS[t.status], cursor:'pointer', flexShrink:0 }} />
+                <span style={{ flex:1 }}>{t.text}</span>
+                <span style={{ fontSize:'0.72em', color:'var(--text3)' }}>{t.platform}</span>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {items.edits.length > 0 && (
+          <div style={{ padding:'8px 12px', borderBottom:'0.5px solid var(--border)' }}>
+            <div style={{ fontSize:'0.68em', fontWeight:600, color:'var(--text3)', letterSpacing:'.08em', textTransform:'uppercase', marginBottom:6 }}>Edición</div>
+            {items.edits.map(ep => (
+              <div key={ep.id} style={{ display:'flex', alignItems:'center', gap:6, padding:'4px 0', fontSize:'0.85em' }}>
+                <span style={{ width:7, height:7, borderRadius:'50%', background:'#7c6deb', flexShrink:0 }} />
+                <span style={{ flex:1 }}>{ep.title}</span>
+                <span style={{ fontSize:'0.72em', color:'var(--text3)' }}>{ep.assignee || 'Sin asignar'}</span>
+              </div>
+            ))}
+          </div>
+        )}
+
+        <div style={{ padding:'8px 12px', display:'flex', gap:6 }}>
+          <input value={newTaskText} onChange={e => setNewTaskText(e.target.value)} onKeyDown={e => e.key==='Enter' && addTaskFromCal()}
+            placeholder="+ Agregar pendiente para este día..." style={{ flex:1, border:'none', background:'transparent', fontSize:'0.82em', color:'var(--text2)', outline:'none', fontFamily:'inherit' }} />
+          {newTaskText && <button onClick={addTaskFromCal} style={{ fontSize:'0.78em', border:'none', background:'var(--text)', color:'var(--bg)', borderRadius:4, padding:'2px 8px', cursor:'pointer', fontFamily:'inherit' }}>+</button>}
+        </div>
       </div>
     )
   }
@@ -289,9 +382,7 @@ export default function Dashboard({ user, onLogout }) {
           ))}
           <button onClick={() => setShowAddTab(true)} style={{ background:'none', border:'none', padding:'4px 8px', fontSize:'0.78em', cursor:'pointer', color:'var(--text3)', fontFamily:'inherit' }}>+ tab</button>
         </div>
-        {!focusActive && (
-          <button onClick={startFocus} style={{ padding:'4px 10px', border:'0.5px solid var(--border2)', borderRadius:4, fontSize:'0.78em', cursor:'pointer', background:'none', color:'var(--text2)', fontFamily:'inherit', display:'flex', alignItems:'center', gap:5 }}>◉ Focus</button>
-        )}
+        {!focusActive && <button onClick={startFocus} style={{ padding:'4px 10px', border:'0.5px solid var(--border2)', borderRadius:4, fontSize:'0.78em', cursor:'pointer', background:'none', color:'var(--text2)', fontFamily:'inherit' }}>◉ Focus</button>}
         <div style={{ position:'relative' }}>
           <button onClick={() => setShowFontSlider(s => !s)} style={{ padding:'4px 8px', border:'0.5px solid var(--border)', borderRadius:4, fontSize:'0.78em', cursor:'pointer', background:'none', color:'var(--text3)', fontFamily:'inherit' }}>Aa</button>
           {showFontSlider && (
@@ -320,11 +411,9 @@ export default function Dashboard({ user, onLogout }) {
       {focusActive && (
         <div style={{ gridColumn:'1/-1', background:'#000', display:'flex', alignItems:'center', justifyContent:'space-between', padding:'0 16px', borderBottom:'0.5px solid #222' }}>
           <div style={{ display:'flex', alignItems:'center', gap:10 }}>
-            <button onClick={() => setFocusRunning(r => !r)} style={{ background:'none', border:'none', cursor:'pointer', color:'#fff', fontSize:'0.9em', padding:'0 4px' }}>
-              {focusRunning ? '⏸' : '▶'}
-            </button>
+            <button onClick={() => setFocusRunning(r => !r)} style={{ background:'none', border:'none', cursor:'pointer', color:'#fff', fontSize:'0.9em', padding:'0 4px' }}>{focusRunning ? '⏸' : '▶'}</button>
             <span style={{ fontSize:'0.95em', fontWeight:500, color:'#fff', fontVariantNumeric:'tabular-nums', letterSpacing:'0.05em' }}>{formatTime(focusSeconds)}</span>
-            <div style={{ display:'flex', gap:'4px' }}>
+            <div style={{ display:'flex', gap:4 }}>
               {[15,25,45,60].map(m => (
                 <button key={m} onClick={() => { setFocusSeconds(m*60); setFocusRunning(false) }}
                   style={{ padding:'2px 7px', borderRadius:10, border:'0.5px solid #333', background:'transparent', color:'#555', fontSize:'0.72em', cursor:'pointer', fontFamily:'inherit' }}>{m}m</button>
@@ -333,9 +422,7 @@ export default function Dashboard({ user, onLogout }) {
           </div>
           <div style={{ display:'flex', alignItems:'center', gap:8 }}>
             <span style={{ fontSize:'0.72em', color:'#444' }}>Notificaciones silenciadas</span>
-            <button onClick={finishFocus} style={{ padding:'3px 10px', border:'0.5px solid #333', borderRadius:4, background:'transparent', color:'#888', fontSize:'0.78em', cursor:'pointer', fontFamily:'inherit' }}>
-              Finalizar proyecto
-            </button>
+            <button onClick={finishFocus} style={{ padding:'3px 10px', border:'0.5px solid #333', borderRadius:4, background:'transparent', color:'#888', fontSize:'0.78em', cursor:'pointer', fontFamily:'inherit' }}>Finalizar proyecto</button>
           </div>
         </div>
       )}
@@ -352,6 +439,15 @@ export default function Dashboard({ user, onLogout }) {
         {sBtn('Pendiente', filterStatus==='pendiente', () => setFilterStatus('pendiente'), '#f59e0b')}
         {sBtn('En proceso', filterStatus==='en-proceso', () => setFilterStatus('en-proceso'), '#7c6deb')}
         {sBtn('Completado', filterStatus==='completado', () => setFilterStatus('completado'), '#22c55e')}
+
+        {/* Calendar legend */}
+        <div style={{ fontSize:'0.68em', fontWeight:600, color:'var(--text3)', letterSpacing:'.1em', textTransform:'uppercase', padding:'10px 8px 3px' }}>Calendario</div>
+        <div style={{ padding:'4px 8px', fontSize:'0.75em', color:'var(--text3)', display:'flex', flexDirection:'column', gap:4 }}>
+          <div style={{ display:'flex', alignItems:'center', gap:6 }}><span style={{ width:6, height:6, borderRadius:'50%', background:'#c00', display:'block' }} />Guión YouTube</div>
+          <div style={{ display:'flex', alignItems:'center', gap:6 }}><span style={{ width:6, height:6, borderRadius:'50%', background:'#666', display:'block' }} />Guión TikTok</div>
+          <div style={{ display:'flex', alignItems:'center', gap:6 }}><span style={{ width:6, height:6, borderRadius:2, background:'#f59e0b', display:'block' }} />Pendiente</div>
+          <div style={{ display:'flex', alignItems:'center', gap:6 }}><span style={{ width:6, height:6, borderRadius:'50%', background:'#7c6deb', display:'block' }} />Edición</div>
+        </div>
       </div>
 
       {/* MAIN */}
@@ -371,11 +467,12 @@ export default function Dashboard({ user, onLogout }) {
           <div>
             <div style={{ fontSize:'1em', fontWeight:500, marginBottom:3 }}>Pendientes</div>
             <div style={{ fontSize:'0.8em', color:'var(--text3)', marginBottom:14 }}>Completada → desaparece sola</div>
-            <div style={{ display:'flex', gap:6, marginBottom:14 }}>
-              <input value={taskInput} onChange={e => setTaskInput(e.target.value)} onKeyDown={e => e.key==='Enter' && addTask()} placeholder="Nueva tarea..." style={{ flex:1, padding:'6px 10px', border:'0.5px solid var(--border2)', borderRadius:4, fontSize:'0.9em' }} />
+            <div style={{ display:'flex', gap:6, marginBottom:8, flexWrap:'wrap' }}>
+              <input value={taskInput} onChange={e => setTaskInput(e.target.value)} onKeyDown={e => e.key==='Enter' && addTask()} placeholder="Nueva tarea..." style={{ flex:1, minWidth:120, padding:'6px 10px', border:'0.5px solid var(--border2)', borderRadius:4, fontSize:'0.9em' }} />
               <select value={taskPlatform} onChange={e => setTaskPlatform(e.target.value)} style={{ padding:'6px 8px', border:'0.5px solid var(--border2)', borderRadius:4, fontSize:'0.85em', cursor:'pointer' }}>
                 {['general','youtube','tiktok','instagram'].map(p => <option key={p} value={p}>{p}</option>)}
               </select>
+              <input type="date" value={taskDueDate} onChange={e => setTaskDueDate(e.target.value)} style={{ padding:'6px 8px', border:'0.5px solid var(--border2)', borderRadius:4, fontSize:'0.85em', cursor:'pointer', background:'var(--bg)', color:'var(--text)' }} />
               <button onClick={addTask} style={{ padding:'6px 12px', border:'none', borderRadius:4, fontSize:'0.85em', cursor:'pointer', background:'var(--text)', color:'var(--bg)', fontFamily:'inherit' }}>+</button>
             </div>
             {filteredTasks.length === 0
@@ -386,6 +483,7 @@ export default function Dashboard({ user, onLogout }) {
                   <span style={{ color:'var(--text3)', fontSize:'0.8em' }}>⠿</span>
                   <span onClick={() => cycleStatus(task.id)} style={{ width:8, height:8, borderRadius:'50%', background:STATUS_COLORS[task.status], flexShrink:0, cursor:'pointer' }} />
                   <span style={{ flex:1 }}>{task.text}</span>
+                  {task.due_date && <span style={{ fontSize:'0.72em', color:'var(--text3)' }}>📅 {task.due_date}</span>}
                   <span style={{ fontSize:'0.75em', padding:'1px 6px', borderRadius:999, border:'0.5px solid var(--border)', color:'var(--text3)' }}>{task.platform}</span>
                   <button onClick={() => deleteTask(task.id)} style={{ background:'none', border:'none', color:'var(--text3)', fontSize:'0.9em', opacity:.4, cursor:'pointer' }}>✕</button>
                 </div>
@@ -398,58 +496,50 @@ export default function Dashboard({ user, onLogout }) {
         {activeTab === 'calendario' && (
           <div>
             <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:14 }}>
-              <button onClick={() => { let m=calMonth-1,y=calYear; if(m<0){m=11;y--;} setCalMonth(m);setCalYear(y) }} style={{ background:'none', border:'none', cursor:'pointer', fontSize:'1.1em', color:'var(--text3)', padding:'0 6px' }}>←</button>
+              <button onClick={() => { let m=calMonth-1,y=calYear; if(m<0){m=11;y--;} setCalMonth(m);setCalYear(y);setSelectedDay(null) }} style={{ background:'none', border:'none', cursor:'pointer', fontSize:'1.1em', color:'var(--text3)', padding:'0 6px' }}>←</button>
               <span style={{ fontSize:'0.95em', fontWeight:500 }}>{MONTHS[calMonth]} {calYear}</span>
-              <button onClick={() => { let m=calMonth+1,y=calYear; if(m>11){m=0;y++;} setCalMonth(m);setCalYear(y) }} style={{ background:'none', border:'none', cursor:'pointer', fontSize:'1.1em', color:'var(--text3)', padding:'0 6px' }}>→</button>
+              <button onClick={() => { let m=calMonth+1,y=calYear; if(m>11){m=0;y++;} setCalMonth(m);setCalYear(y);setSelectedDay(null) }} style={{ background:'none', border:'none', cursor:'pointer', fontSize:'1.1em', color:'var(--text3)', padding:'0 6px' }}>→</button>
             </div>
             <div style={{ display:'grid', gridTemplateColumns:'repeat(7,1fr)', gap:3 }}>
               {DAYS.map(d => <div key={d} style={{ textAlign:'center', fontSize:'0.7em', color:'var(--text3)', paddingBottom:4, textTransform:'uppercase', letterSpacing:'.05em' }}>{d}</div>)}
               {renderCalendar()}
             </div>
+            {selectedDay && <DayPanel dayKey={selectedDay} />}
           </div>
         )}
 
         {/* GUIONES */}
         {activeTab === 'guiones' && (
           <div>
-            <button onClick={newScript} style={{ display:'flex', alignItems:'center', gap:4, padding:'6px 12px', border:'0.5px dashed var(--border2)', borderRadius:4, background:'none', cursor:'pointer', fontSize:'0.85em', color:'var(--text3)', fontFamily:'inherit', width:'100%', marginBottom:12 }}>+ Nuevo guión</button>
+            <button onClick={() => newScript(null)} style={{ display:'flex', alignItems:'center', gap:4, padding:'6px 12px', border:'0.5px dashed var(--border2)', borderRadius:4, background:'none', cursor:'pointer', fontSize:'0.85em', color:'var(--text3)', fontFamily:'inherit', width:'100%', marginBottom:12 }}>+ Nuevo guión</button>
             {scripts.filter(s => filterPlatform==='todos' || s.platform===filterPlatform).map(script => (
-              <div key={script.id}
-                onClick={() => setSelectedScript(script)}
-                onDoubleClick={() => deleteScript(script.id)}
+              <div key={script.id} onClick={() => setSelectedScript(script)} onDoubleClick={() => deleteScript(script.id)}
                 style={{ display:'flex', alignItems:'center', gap:8, padding:'7px 10px', border:`0.5px solid ${selectedScript?.id===script.id ? 'var(--text)' : 'var(--border)'}`, borderRadius:6, marginBottom:5, cursor:'pointer', fontSize:'0.9em', opacity: script.status==='listo' ? .6 : 1 }}>
+                <span style={{ width:6, height:6, borderRadius:'50%', background: PLAT_COLOR[script.platform], flexShrink:0 }} />
                 <span style={{ flex:1, fontWeight:500 }}>{script.title}</span>
-                {script.status === 'listo' && <span style={{ fontSize:'0.7em', padding:'1px 6px', borderRadius:999, border:'0.5px solid var(--border)', color:'var(--text3)' }}>🔒 cerrado</span>}
+                {script.status === 'listo' && <span style={{ fontSize:'0.7em' }}>🔒</span>}
                 <span style={{ fontSize:'0.75em', color:'var(--text3)' }}>{script.sched_date || '—'}</span>
                 <span style={{ fontSize:'0.75em', padding:'1px 6px', borderRadius:999, border:'0.5px solid var(--border)', color:'var(--text3)' }}>{script.platform}</span>
               </div>
             ))}
             {selectedScript && (
-              <div style={{ border:`0.5px solid ${isLocked ? '#333' : 'var(--border)'}`, borderRadius:8, overflow:'hidden', marginTop:14, opacity: isLocked ? .85 : 1 }}>
-                {isLocked && (
-                  <div style={{ background:'#111', padding:'6px 12px', fontSize:'0.78em', color:'#555', display:'flex', alignItems:'center', gap:6 }}>
-                    🔒 Proyecto finalizado — solo lectura
-                  </div>
-                )}
+              <div style={{ border:`0.5px solid ${isLocked ? '#333' : 'var(--border)'}`, borderRadius:8, overflow:'hidden', marginTop:14 }}>
+                {isLocked && <div style={{ background:'#111', padding:'6px 12px', fontSize:'0.78em', color:'#555' }}>🔒 Proyecto finalizado — solo lectura</div>}
                 <div style={{ display:'flex', alignItems:'center', gap:5, padding:'8px 12px', borderBottom:'0.5px solid var(--border)', background:'var(--bg2)', flexWrap:'wrap' }}>
                   <input value={selectedScript.title} onChange={e => updateScript('title', e.target.value)} disabled={isLocked}
                     style={{ flex:1, border:'none', background:'transparent', fontSize:'0.95em', fontWeight:500, fontFamily:'inherit', color:'var(--text)', minWidth:100, cursor: isLocked ? 'default' : 'text' }} />
+                  <input type="date" value={selectedScript.sched_date || ''} onChange={e => updateScript('sched_date', e.target.value)} disabled={isLocked}
+                    style={{ padding:'2px 6px', border:'0.5px solid var(--border2)', borderRadius:4, fontSize:'0.75em', background:'var(--bg)', color:'var(--text)', cursor: isLocked ? 'default' : 'pointer' }} />
                   {['youtube','tiktok','instagram'].map(p => (
                     <button key={p} onClick={() => updateScript('platform', p)} disabled={isLocked}
                       style={{ padding:'2px 7px', border:'0.5px solid var(--border2)', borderRadius:4, fontSize:'0.75em', cursor: isLocked ? 'default' : 'pointer', background: selectedScript.platform===p ? 'var(--text)' : 'none', color: selectedScript.platform===p ? 'var(--bg)' : 'var(--text2)', fontFamily:'inherit' }}>{p}</button>
                   ))}
-                  {!isLocked && (
-                    <button onClick={generateScript} disabled={aiLoading}
-                      style={{ padding:'3px 9px', background:'var(--text)', color:'var(--bg)', border:'none', borderRadius:4, fontSize:'0.8em', cursor:'pointer', fontFamily:'inherit', opacity: aiLoading ? .5 : 1 }}>
-                      {aiLoading ? '...' : '✦ IA'}
-                    </button>
-                  )}
+                  {!isLocked && <button onClick={generateScript} disabled={aiLoading} style={{ padding:'3px 9px', background:'var(--text)', color:'var(--bg)', border:'none', borderRadius:4, fontSize:'0.8em', cursor:'pointer', fontFamily:'inherit', opacity: aiLoading ? .5 : 1 }}>{aiLoading ? '...' : '✦ IA'}</button>}
                 </div>
                 {[['hook','Hook'],['intro','Introducción'],['desarrollo','Desarrollo'],['cta','Call to Action'],['notas','Notas']].map(([field, label]) => (
                   <div key={field} style={{ borderBottom:'0.5px solid var(--border)', padding:'10px 12px' }}>
                     <div style={{ fontSize:'0.7em', fontWeight:600, letterSpacing:'.08em', textTransform:'uppercase', color:'var(--text3)', marginBottom:5 }}>{label}</div>
-                    <textarea value={selectedScript[field] || ''} onChange={e => updateScript(field, e.target.value)}
-                      rows={field==='desarrollo' ? 5 : 2} readOnly={isLocked}
+                    <textarea value={selectedScript[field] || ''} onChange={e => updateScript(field, e.target.value)} rows={field==='desarrollo' ? 5 : 2} readOnly={isLocked}
                       style={{ width:'100%', border:'none', background:'transparent', fontFamily:'inherit', fontSize:'0.9em', lineHeight:1.6, color:'var(--text)', minHeight:36, cursor: isLocked ? 'default' : 'text' }} />
                   </div>
                 ))}
@@ -468,17 +558,17 @@ export default function Dashboard({ user, onLogout }) {
             <div style={{ display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:8 }}>
               {EDIT_COLS.map(col => (
                 <div key={col} onDragOver={e => e.preventDefault()} onDrop={() => dropEditProject(col)} style={{ border:'0.5px solid var(--border)', borderRadius:6, overflow:'hidden' }}>
-                  <div style={{ padding:'6px 10px', fontSize:'0.72em', fontWeight:600, borderBottom:'0.5px solid var(--border)', background:'var(--bg2)', display:'flex', alignItems:'center', justifyContent:'space-between', textTransform:'uppercase', letterSpacing:'.06em', color:'var(--text3)' }}>
+                  <div style={{ padding:'6px 10px', fontSize:'0.72em', fontWeight:600, borderBottom:'0.5px solid var(--border)', background:'var(--bg2)', display:'flex', justifyContent:'space-between', textTransform:'uppercase', letterSpacing:'.06em', color:'var(--text3)' }}>
                     <span>{EDIT_LABELS[col]}</span>
                     <span>{editProjects.filter(p => p.column_name===col).length}</span>
                   </div>
                   <div>
                     {editProjects.filter(p => p.column_name===col).map(ep => (
-                      <div key={ep.id} draggable onDragStart={() => setDragEpId(ep.id)}
-                        style={{ padding:'8px 10px', borderBottom:'0.5px solid var(--border)', fontSize:'0.85em', cursor:'grab', userSelect:'none' }}>
+                      <div key={ep.id} draggable onDragStart={() => setDragEpId(ep.id)} style={{ padding:'8px 10px', borderBottom:'0.5px solid var(--border)', fontSize:'0.85em', cursor:'grab', userSelect:'none' }}>
                         <div style={{ fontWeight:500, marginBottom:3 }}>{ep.title}</div>
-                        <div style={{ display:'flex', alignItems:'center', gap:5 }}>
+                        <div style={{ display:'flex', alignItems:'center', gap:5, flexWrap:'wrap' }}>
                           <span style={{ fontSize:'0.75em', color:'var(--text3)' }}>{ep.platform}</span>
+                          {ep.assigned_date && <span style={{ fontSize:'0.72em', color:'var(--text3)' }}>📅 {ep.assigned_date}</span>}
                           <button onClick={() => { const n=prompt('Editor:'); if(n!==null) assignEditor(ep.id, n.trim()) }}
                             style={{ fontSize:'0.75em', padding:'1px 6px', borderRadius:999, border:'0.5px solid var(--border)', color:'var(--text3)', background:'none', cursor:'pointer', fontFamily:'inherit' }}>
                             {ep.assignee || '+ Asignar'}
@@ -486,9 +576,7 @@ export default function Dashboard({ user, onLogout }) {
                         </div>
                       </div>
                     ))}
-                    {editProjects.filter(p => p.column_name===col).length === 0 && (
-                      <div style={{ padding:10, fontSize:'0.8em', color:'var(--text3)', textAlign:'center' }}>Arrastra aquí</div>
-                    )}
+                    {editProjects.filter(p => p.column_name===col).length === 0 && <div style={{ padding:10, fontSize:'0.8em', color:'var(--text3)', textAlign:'center' }}>Arrastra aquí</div>}
                   </div>
                 </div>
               ))}
